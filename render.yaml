@@ -1,0 +1,22 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+#
+# Quickest path to a free, shareable URL:
+#   1. Push this repo to GitHub.
+#   2. On Render: New -> Blueprint -> pick the repo -> Apply.
+#      Render reads this file automatically and creates the service below.
+#   3. Set GEMINI_API_KEY in the service's Environment tab if you want the
+#      real LLM backend; otherwise it runs MockClassifier automatically.
+#
+# Free-tier notes: the instance sleeps after ~15 min idle and cold-starts
+# on the next request (a few seconds) -- fine for dev/test, not for a demo
+# you're presenting live without warming it up first.
+services:
+  - type: web
+    name: transaction-classifier
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false  # set manually in the dashboard; never commit real keys
