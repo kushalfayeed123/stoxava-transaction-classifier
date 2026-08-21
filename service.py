@@ -29,7 +29,7 @@ def _prediction_to_dict(p: Prediction) -> dict[str, Any]:
         "reason_code": p.reason_code,
         "needs_review": p.needs_review,
         "is_guess": p.is_guess,
-        "direction": p.direction,          # "debit" | "credit"
+        "direction": p.direction,  # "debit" | "credit"
         "transaction_type": p.transaction_type,  # "income" | "expense" | "transfer"
     }
 
@@ -38,8 +38,8 @@ def classify_plaid_response(
     payload: dict[str, Any] | list[Any],
     classifier: Classifier,
     *,
-    taxonomy: list[TxnClass] = DEFAULT_TAXONOMY,
-    sign_convention: str = "standard",
+    taxonomy: list[TxnClass]=DEFAULT_TAXONOMY,
+    sign_convention: str="standard",
 ) -> dict[str, Any]:
     """Normalize -> classify -> re-attach to the original transaction.
 
@@ -58,7 +58,7 @@ def classify_plaid_response(
     reported separately in `skipped` rather than silently dropped, so the
     backend can decide how to handle them (e.g. surface for manual review).
     """
-    normalized, skipped = _normalize_with_skip_tracking(payload, sign_convention)
+    normalized, skipped, diagnostics = _normalize_with_skip_tracking(payload, sign_convention)
 
     predictions: list[Prediction] = classifier.classify_batch(normalized, taxonomy) if normalized else []
     predictions_by_id = {p.transaction_id: p for p in predictions}
@@ -108,31 +108,81 @@ def classify_plaid_response(
         },
         "transactions": transactions_out,
         "skipped": skipped,
+        # Only meaningful (and only worth reading) when total_transactions
+        # is 0 -- explains exactly what was/wasn't found in the payload
+        # instead of a flat "no transactions" message.
+        "diagnostics": diagnostics,
     }
 
 
 def _normalize_with_skip_tracking(
     payload: dict[str, Any] | list[Any], sign_convention: str
-) -> tuple[list[NormalizedTransaction], list[dict[str, Any]]]:
+) -> tuple[list[NormalizedTransaction], list[dict[str, Any]], dict[str, Any]]:
     """Wraps normalize_plaid_response so we can also report which raw
     records failed to normalize (id missing / totally malformed), instead
-    of only logging them and losing track of the count/content."""
+    of only logging them and losing track of the count/content.
+
+    Also returns a `diagnostics` dict describing exactly what was found in
+    the payload, so a "0 transactions" result can explain *why* instead of
+    failing silently."""
     from normalizer import normalize_transaction
 
     accounts_map: dict[str, dict[str, Any]] = {}
     transactions_list: list[Any] = []
+    source_field: Optional[str] = None
+    diagnostics: dict[str, Any] = {}
+
+    # Defensive auto-unwrap: it's an easy, common mistake to paste/send an
+    # already-`{"transactions": {...}}`-wrapped body as the *value* of
+    # `transactions` (double wrapping) -- e.g. copying a curl example body
+    # verbatim into a client that also does its own wrapping. If the given
+    # payload has no "accounts"/"added" of its own but its "transactions"
+    # key holds a dict that looks like the real Plaid envelope, unwrap it
+    # one level rather than reporting zero transactions.
+    if (
+        isinstance(payload, dict)
+        and "accounts" not in payload
+        and "added" not in payload
+        and isinstance(payload.get("transactions"), dict)
+    ):
+        inner = payload["transactions"]
+        if "accounts" in inner or "added" in inner or isinstance(inner.get("transactions"), list):
+            diagnostics["auto_unwrapped"] = True
+            payload = inner
 
     if isinstance(payload, dict):
+        diagnostics["top_level_keys"] = list(payload.keys())
         for acct in payload.get("accounts", []) or []:
             if isinstance(acct, dict) and acct.get("account_id") is not None:
                 accounts_map[str(acct["account_id"])] = acct
+
         added = payload.get("added", [])
-        if isinstance(added, list) and added:
-            transactions_list = added
-        elif isinstance(payload.get("transactions"), list):
+        modified = payload.get("modified", [])
+        diagnostics["added_count"] = len(added) if isinstance(added, list) else None
+        diagnostics["modified_count"] = len(modified) if isinstance(modified, list) else None
+
+        # A Plaid /transactions/sync page can carry new transactions in
+        # "added" AND status changes (e.g. pending -> posted) in
+        # "modified" -- both represent real transactions worth
+        # classifying, so merge them rather than only reading "added".
+        merged: list[Any] = []
+        if isinstance(added, list):
+            merged.extend(added)
+        if isinstance(modified, list):
+            merged.extend(modified)
+        if merged:
+            transactions_list = merged
+            source_field = "added+modified"
+        elif isinstance(payload.get("transactions"), list) and payload["transactions"]:
             transactions_list = payload["transactions"]
+            source_field = "transactions"
     elif isinstance(payload, list):
         transactions_list = payload
+        source_field = "bare_list"
+        diagnostics["top_level_keys"] = None
+
+    diagnostics["source_field_used"] = source_field
+    diagnostics["candidate_count"] = len(transactions_list)
 
     out: list[NormalizedTransaction] = []
     skipped: list[dict[str, Any]] = []
@@ -147,4 +197,4 @@ def _normalize_with_skip_tracking(
         except (ValueError, TypeError, KeyError) as exc:
             skipped.append({"reason": str(exc), "raw": raw})
 
-    return out, skipped
+    return out, skipped, diagnostics
