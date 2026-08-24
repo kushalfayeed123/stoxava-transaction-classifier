@@ -4,13 +4,17 @@ import logging
 import os
 from typing import Any, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from classifier import MockClassifier, LLMClassifier, Classifier
+from classifier import  LLMClassifier, Classifier
 from service import classify_plaid_response
 from taxonomy import DEFAULT_TAXONOMY
+
+
+load_dotenv()
 
 logger = logging.getLogger("transaction_classifier")
 
@@ -39,13 +43,14 @@ def get_classifier() -> Classifier:
     """Prefer the LLM backend when a key is configured; fall back to the
     deterministic mock backend on any init failure so the service never
     fails to start (and demos/tests still work without an API key)."""
-    if os.environ.get("GEMINI_API_KEY"):
-        try:
-            return LLMClassifier()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Falling back to MockClassifier: %s", exc)
-            return MockClassifier()
-    return MockClassifier()
+    print(os.environ.get("GEMINI_API_KEY"))
+    # if os.environ.get("GEMINI_API_KEY"):
+    #     try:
+    #         return LLMClassifier()
+    #     except Exception as exc:  # noqa: BLE001
+    #         logger.warning("Falling back to MockClassifier: %s", exc)
+    #         return MockClassifier()
+    return LLMClassifier()
 
 
 classifier: Classifier = get_classifier()

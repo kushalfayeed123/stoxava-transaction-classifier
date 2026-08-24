@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from classifier import Classifier, Prediction
-from normalizer import NormalizedTransaction, normalize_plaid_response
+from classifier import Classifier, Prediction, _enrich, _heuristic_guess
+from normalizer import (
+    NormalizedTransaction,
+    normalize_plaid_response,
+    normalize_transaction,
+)
 from taxonomy import TxnClass, DEFAULT_TAXONOMY
 
 
@@ -38,14 +42,14 @@ def classify_plaid_response(
     payload: dict[str, Any] | list[Any],
     classifier: Classifier,
     *,
-    taxonomy: list[TxnClass]=DEFAULT_TAXONOMY,
-    sign_convention: str="standard",
+    taxonomy: list[TxnClass] = DEFAULT_TAXONOMY,
+    sign_convention: str = "standard",
 ) -> dict[str, Any]:
     """Normalize -> classify -> re-attach to the original transaction.
 
     Returns a dict shaped as:
     {
-      "backend": "MockClassifier" | "LLMClassifier",
+      "backend": "LLMClassifier",
       "summary": {...},
       "transactions": [
           {...every original field from the input transaction...,
@@ -68,6 +72,7 @@ def classify_plaid_response(
     expense_total = 0.0
     needs_review_count = 0
     guessed_count = 0
+    valid_names = {c.name for c in taxonomy}
 
     for t in normalized:
         p = predictions_by_id.get(t.transaction_id)
@@ -75,9 +80,6 @@ def classify_plaid_response(
             # Defensive: classifier implementations must return one
             # Prediction per input transaction, but never let a missing
             # entry silently drop a transaction from the response.
-            from classifier import _heuristic_guess, _enrich  # local import to avoid unused-at-module-load cost
-
-            valid_names = {c.name for c in taxonomy}
             p = _enrich(
                 t.transaction_id, *_heuristic_guess(t, valid_names),
                 direction=t.direction, is_guess=True, taxonomy=taxonomy,
@@ -125,20 +127,17 @@ def _normalize_with_skip_tracking(
     Also returns a `diagnostics` dict describing exactly what was found in
     the payload, so a "0 transactions" result can explain *why* instead of
     failing silently."""
-    from normalizer import normalize_transaction
-
     accounts_map: dict[str, dict[str, Any]] = {}
     transactions_list: list[Any] = []
     source_field: Optional[str] = None
     diagnostics: dict[str, Any] = {}
 
     # Defensive auto-unwrap: it's an easy, common mistake to paste/send an
-    # already-`{"transactions": {...}}`-wrapped body as the *value* of
-    # `transactions` (double wrapping) -- e.g. copying a curl example body
-    # verbatim into a client that also does its own wrapping. If the given
-    # payload has no "accounts"/"added" of its own but its "transactions"
-    # key holds a dict that looks like the real Plaid envelope, unwrap it
-    # one level rather than reporting zero transactions.
+    # already-{"transactions": {...}}-wrapped body as the *value* of
+    # `transactions` (double wrapping). If the given payload has no
+    # "accounts"/"added" of its own but its "transactions" key holds a dict
+    # that looks like the real Plaid envelope, unwrap it one level rather
+    # than reporting zero transactions.
     if (
         isinstance(payload, dict)
         and "accounts" not in payload
@@ -165,13 +164,13 @@ def _normalize_with_skip_tracking(
         # "added" AND status changes (e.g. pending -> posted) in
         # "modified" -- both represent real transactions worth
         # classifying, so merge them rather than only reading "added".
-        merged: list[Any] = []
+        merged_list: list[Any] = []
         if isinstance(added, list):
-            merged.extend(added)
+            merged_list.extend(added)
         if isinstance(modified, list):
-            merged.extend(modified)
-        if merged:
-            transactions_list = merged
+            merged_list.extend(modified)
+        if merged_list:
+            transactions_list = merged_list
             source_field = "added+modified"
         elif isinstance(payload.get("transactions"), list) and payload["transactions"]:
             transactions_list = payload["transactions"]
