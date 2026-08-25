@@ -139,7 +139,7 @@ _DEFAULT_EXPENSE_TAXONOMY: list[TxnClass] = [
 # are the one place this taxonomy extrapolates beyond the doc -- flag that
 # to the client if the intended treatment differs.
 _DEFAULT_INCOME_TAXONOMY: list[TxnClass] = [
-    TxnClass("REGULAR_PAYCHECK", "Recurring payroll/direct-deposit paycheck from an employer.",
+    TxnClass("REGULAR_W2", "Recurring payroll/direct-deposit paycheck from an employer.",
              "income", "credit",
              counts_actual_income=True, counts_projected_gross="no", requires_gross_confirmation=False),
     TxnClass("BONUS", "One-time or periodic bonus payment from an employer.",
