@@ -2,21 +2,38 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from classifier import  LLMClassifier, Classifier
+from classifier import LLMClassifier, Classifier, MockClassifier
+from llm_provider import ProviderConfig
 from service import classify_plaid_response
 from taxonomy import DEFAULT_TAXONOMY
 
 
 load_dotenv()
 
+# --------------------------------------------------------------------------
+# Logging
+# --------------------------------------------------------------------------
+# Root logging config so `logger.info(...)` calls actually surface somewhere
+# (uvicorn's default config otherwise silences app-level loggers depending
+# on how the process is started).
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
 logger = logging.getLogger("transaction_classifier")
+access_logger = logging.getLogger("transaction_classifier.access")
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(
     title="Stoxava Transaction Classifier",
@@ -39,18 +56,47 @@ app = FastAPI(
 )
 
 
-def get_classifier() -> Classifier:
-    """Prefer the LLM backend when a key is configured; fall back to the
-    deterministic mock backend on any init failure so the service never
-    fails to start (and demos/tests still work without an API key)."""
-    print(os.environ.get("GEMINI_API_KEY"))
-    # if os.environ.get("GEMINI_API_KEY"):
-    #     try:
-    #         return LLMClassifier()
-    #     except Exception as exc:  # noqa: BLE001
-    #         logger.warning("Falling back to MockClassifier: %s", exc)
-    #         return MockClassifier()
-    return LLMClassifier()
+# --------------------------------------------------------------------------
+# Request logging middleware
+# --------------------------------------------------------------------------
+# Logs method, path, client IP, and User-Agent for every request, plus
+# status + latency once the response is ready. This is what tells you
+# *who* is hitting /health repeatedly: a platform health checker, an
+# uptime pinger, multiple worker processes, or a scanner will each show
+# a distinct UA/IP/cadence pattern in these lines.
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "-")
+
+    response = await call_next(request)
+
+    duration_ms = (time.perf_counter() - start) * 1000
+    # Health checks are extremely high-volume and low-signal once you've
+    # diagnosed the source; keep them at DEBUG so normal INFO-level logs
+    # aren't drowned out, but they're still available if you bump the level.
+    log_fn = access_logger.debug if request.url.path == "/health" else access_logger.info
+    log_fn(
+        "%s %s -> %s (%.1fms) ip=%s ua=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        client_ip,
+        user_agent,
+    )
+    return response
+
+
+def get_classifier():
+    try:
+        return LLMClassifier(provider_config=ProviderConfig())
+    except (ImportError, RuntimeError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "Falling back to MockClassifier: %s", exc
+        )
+        return MockClassifier()
 
 
 classifier: Classifier = get_classifier()
@@ -195,164 +241,11 @@ def classify_transactions(payload: ClassificationRequest) -> dict[str, Any]:
     return result
 
 
+# Read once at import time instead of re-rendering a giant Python string
+# literal (and re-allocating it) on every single GET / request.
+_INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Transaction Classifier Demo</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-    </head>
-    <body class="bg-gray-50 text-gray-900 font-sans">
-        <div class="max-w-7xl mx-auto px-4 py-8">
-            <header class="mb-8 flex justify-between items-center">
-                <div>
-                    <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">Transaction Classification Dashboard</h1>
-                    <p class="mt-1 text-sm text-gray-500">Paste your raw Plaid API response JSON below.</p>
-                </div>
-                <div>
-                    <button onclick="runClassification()" id="run-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-5 py-2.5 rounded-lg shadow transition">
-                        Run Classification
-                    </button>
-                </div>
-            </header>
-
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                <div class="lg:col-span-2 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Plaid JSON Payload</label>
-                    <textarea id="json-input" rows="10" class="w-full font-mono text-xs p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="Paste raw Plaid response JSON here..."></textarea>
-                </div>
-                <div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">Upload JSON File</label>
-                        <input type="file" id="file-input" accept=".json" onchange="handleFileUpload(event)" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"/>
-                    </div>
-                    <div id="loading" class="hidden text-indigo-600 font-medium animate-pulse mt-4">
-                        Processing transactions...
-                    </div>
-                </div>
-            </div>
-
-            <div id="summary" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4 mb-6 text-sm"></div>
-
-            <div class="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Transaction ID</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Predicted Class</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Direction</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Confidence</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Reason Code</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="results-body" class="bg-white divide-y divide-gray-200 text-sm">
-                        <tr>
-                            <td colspan="7" class="px-6 py-8 text-center text-gray-400">Paste your Plaid JSON response above and click "Run Classification".</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <script>
-            function handleFileUpload(event) {
-                const file = event.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    try {
-                        const parsed = JSON.parse(e.target.result);
-                        document.getElementById('json-input').value = JSON.stringify(parsed, null, 2);
-                    } catch (err) {
-                        alert('Invalid JSON file format.');
-                    }
-                };
-                reader.readAsText(file);
-            }
-
-            function statBox(label, value) {
-                return `<div class="bg-white p-4 rounded-xl border border-gray-200"><div class="text-xs text-gray-500 uppercase tracking-wide">${label}</div><div class="text-lg font-bold text-gray-900 mt-1">${value}</div></div>`;
-            }
-
-            async function runClassification() {
-                const btn = document.getElementById('run-btn');
-                const loading = document.getElementById('loading');
-                const tbody = document.getElementById('results-body');
-                const summaryEl = document.getElementById('summary');
-                const rawInput = document.getElementById('json-input').value.trim();
-
-                if (!rawInput) {
-                    alert('Please provide Plaid JSON data.');
-                    return;
-                }
-
-                let transactions;
-                try {
-                    transactions = JSON.parse(rawInput);
-                } catch (err) {
-                    alert('JSON Parse Error: ' + err.message);
-                    return;
-                }
-
-                btn.disabled = true;
-                loading.classList.remove('hidden');
-
-                try {
-                    const res = await fetch('/api/classify', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ transactions })
-                    });
-
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.detail || 'Server error');
-
-                    const s = data.summary;
-                    summaryEl.innerHTML = [
-                        statBox('Total', s.total_transactions),
-                        statBox('Income', '$' + s.income_total.toFixed(2)),
-                        statBox('Expense', '$' + s.expense_total.toFixed(2)),
-                        statBox('Needs Review', s.needs_review_count),
-                        statBox('Guessed', s.guessed_count),
-                    ].join('');
-                    summaryEl.classList.remove('hidden');
-
-                    tbody.innerHTML = '';
-
-                    data.transactions.forEach(t => {
-                        const c = t.classification;
-                        const tr = document.createElement('tr');
-                        const statusBadge = c.needs_review
-                            ? '<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800">Needs Review</span>'
-                            : '<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-100 text-emerald-800">Passed</span>';
-                        const guessBadge = c.is_guess ? ' <span class="text-xs text-gray-400">(guess)</span>' : '';
-                        const txnId = t.transaction_id || t.id || '';
-
-                        tr.innerHTML = `
-                            <td class="px-6 py-4 whitespace-nowrap font-mono text-gray-500 text-xs">${txnId}</td>
-                            <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">${c.predicted_class}${guessBadge}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-600 capitalize">${c.transaction_type}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-600 capitalize">${c.direction}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-600">${(c.confidence * 100).toFixed(0)}%</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-xs font-mono text-gray-500">${c.reason_code}</td>
-                            <td class="px-6 py-4 whitespace-nowrap">${statusBadge}</td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                } catch (err) {
-                    alert('Error running classification: ' + err.message);
-                } finally {
-                    btn.disabled = false;
-                    loading.classList.add('hidden');
-                }
-            }
-        </script>
-    </body>
-    </html>
-    """
+def index() -> str:
+    return _INDEX_HTML

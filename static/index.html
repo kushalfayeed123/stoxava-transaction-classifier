@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transaction Classifier Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans">
+    <div class="max-w-7xl mx-auto px-4 py-8">
+        <header class="mb-8 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">Transaction Classification Dashboard</h1>
+                <p class="mt-1 text-sm text-gray-500">Paste your raw Plaid API response JSON below.</p>
+            </div>
+            <div>
+                <button onclick="runClassification()" id="run-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-5 py-2.5 rounded-lg shadow transition">
+                    Run Classification
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <div class="lg:col-span-2 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Plaid JSON Payload</label>
+                <textarea id="json-input" rows="10" class="w-full font-mono text-xs p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="Paste raw Plaid response JSON here..."></textarea>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col justify-between">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Upload JSON File</label>
+                    <input type="file" id="file-input" accept=".json" onchange="handleFileUpload(event)" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"/>
+                </div>
+                <div id="loading" class="hidden text-indigo-600 font-medium animate-pulse mt-4">
+                    Processing transactions...
+                </div>
+            </div>
+        </div>
+
+        <div id="summary" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4 mb-6 text-sm"></div>
+
+        <div class="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Transaction ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Predicted Class</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Direction</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Confidence</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Reason Code</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body" class="bg-white divide-y divide-gray-200 text-sm">
+                    <tr>
+                        <td colspan="7" class="px-6 py-8 text-center text-gray-400">Paste your Plaid JSON response above and click "Run Classification".</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const parsed = JSON.parse(e.target.result);
+                    document.getElementById('json-input').value = JSON.stringify(parsed, null, 2);
+                } catch (err) {
+                    alert('Invalid JSON file format.');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function statBox(label, value) {
+            return `<div class="bg-white p-4 rounded-xl border border-gray-200"><div class="text-xs text-gray-500 uppercase tracking-wide">${label}</div><div class="text-lg font-bold text-gray-900 mt-1">${value}</div></div>`;
+        }
+
+        async function runClassification() {
+            const btn = document.getElementById('run-btn');
+            const loading = document.getElementById('loading');
+            const tbody = document.getElementById('results-body');
+            const summaryEl = document.getElementById('summary');
+            const rawInput = document.getElementById('json-input').value.trim();
+
+            if (!rawInput) {
+                alert('Please provide Plaid JSON data.');
+                return;
+            }
+
+            let transactions;
+            try {
+                transactions = JSON.parse(rawInput);
+            } catch (err) {
+                alert('JSON Parse Error: ' + err.message);
+                return;
+            }
+
+            btn.disabled = true;
+            loading.classList.remove('hidden');
+
+            try {
+                const res = await fetch('/api/classify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ transactions })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Server error');
+
+                const s = data.summary;
+                summaryEl.innerHTML = [
+                    statBox('Total', s.total_transactions),
+                    statBox('Income', '$' + s.income_total.toFixed(2)),
+                    statBox('Expense', '$' + s.expense_total.toFixed(2)),
+                    statBox('Needs Review', s.needs_review_count),
+                    statBox('Guessed', s.guessed_count),
+                ].join('');
+                summaryEl.classList.remove('hidden');
+
+                tbody.innerHTML = '';
+
+                data.transactions.forEach(t => {
+                    const c = t.classification;
+                    const tr = document.createElement('tr');
+                    const statusBadge = c.needs_review
+                        ? '<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800">Needs Review</span>'
+                        : '<span class="px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-100 text-emerald-800">Passed</span>';
+                    const guessBadge = c.is_guess ? ' <span class="text-xs text-gray-400">(guess)</span>' : '';
+                    const txnId = t.transaction_id || t.id || '';
+
+                    tr.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap font-mono text-gray-500 text-xs">${txnId}</td>
+                        <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">${c.predicted_class}${guessBadge}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-gray-600 capitalize">${c.transaction_type}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-gray-600 capitalize">${c.direction}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-gray-600">${(c.confidence * 100).toFixed(0)}%</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-xs font-mono text-gray-500">${c.reason_code}</td>
+                        <td class="px-6 py-4 whitespace-nowrap">${statusBadge}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                alert('Error running classification: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                loading.classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html>

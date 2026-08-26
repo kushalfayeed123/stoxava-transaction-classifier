@@ -1,0 +1,167 @@
+[
+  {
+    "name": "REGULAR_PAYCHECK",
+    "definition": "Recurring payroll/direct-deposit paycheck from an employer.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "BONUS",
+    "definition": "One-time or periodic bonus payment from an employer.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "COMMISSION",
+    "definition": "Sales commission payment from an employer.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "OVERTIME",
+    "definition": "Overtime pay, typically paid alongside or separate from a regular paycheck.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "RETRO_PAY",
+    "definition": "Retroactive pay correction from an employer.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "SEVERANCE",
+    "definition": "Severance payment from a former employer.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "OTHER_W2",
+    "definition": "Other W-2 employer compensation not covered by the classes above.",
+    "flow": "income",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "yes_once_gross_confirmed",
+    "requires_gross_confirmation": true
+  },
+  {
+    "name": "REIMBURSEMENT",
+    "definition": "Employer or third-party reimbursement of an out-of-pocket expense.",
+    "flow": "transfer",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "TRANSFER",
+    "definition": "Movement of funds between the user's own accounts, or a non-gift P2P transfer.",
+    "flow": "transfer",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "REFUND",
+    "definition": "Merchant refund or chargeback credited back to the account.",
+    "flow": "transfer",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "LOAN",
+    "definition": "Loan proceeds or a cash-advance deposit.",
+    "flow": "transfer",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "GIFT_FAMILY_SUPPORT",
+    "definition": "P2P deposit from an individual for gift or family-support purposes -- not W-2 income.",
+    "flow": "ambiguous",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "OTHER_INCOME",
+    "definition": "Confirmed non-W2 income that doesn't fit another class (not yet reflected in gross-income projections).",
+    "flow": "ambiguous",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": false,
+    "counts_actual_income": true,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "FOREIGN_SOURCE",
+    "definition": "Deposit from a foreign source; treated as review-first until classified.",
+    "flow": "ambiguous",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": true,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  },
+  {
+    "name": "UNCLASSIFIED",
+    "definition": "Insufficient information to classify the deposit -- excluded from income until reviewed.",
+    "flow": "ambiguous",
+    "direction": "credit",
+    "top_level_bucket": null,
+    "needs_review_default": true,
+    "counts_actual_income": false,
+    "counts_projected_gross": "no",
+    "requires_gross_confirmation": false
+  }
+]

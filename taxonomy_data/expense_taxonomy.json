@@ -1,0 +1,200 @@
+[
+  {
+    "name": "Housing",
+    "definition": "Rent, mortgage payments on a primary home, property management.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Groceries",
+    "definition": "Supermarkets, grocery stores, food markets.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Dining",
+    "definition": "Restaurants, cafes, bars, food delivery.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Transportation",
+    "definition": "Ride-share, public transit, fuel, parking, vehicle maintenance.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Travel",
+    "definition": "Airlines, hotels, car rentals, travel booking platforms.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Utilities",
+    "definition": "Electricity, gas, water, internet, phone bills.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Subscriptions",
+    "definition": "Recurring fixed-amount charges for digital or membership services (streaming, software, gym).",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Shopping",
+    "definition": "General retail purchases, e-commerce, clothing, electronics.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Healthcare",
+    "definition": "Pharmacies, clinics, hospitals, medical/dental/vision providers, insurance copays.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Education",
+    "definition": "Tuition, school fees, courses, exam/certification fees.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Family Support",
+    "definition": "Recurring or confirmed transfers supporting family members (rent, remittances, dependent care).",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Family Support",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Debt Payments",
+    "definition": "Student loan, personal loan, auto loan, and credit-card minimum/partial payments.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Debt Payments",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Insurance",
+    "definition": "Auto, home/renters, health (outside payroll), and life insurance premium payments.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Insurance",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Personal Care",
+    "definition": "Salons, gyms (non-membership), grooming, cosmetics, personal wellness.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Entertainment",
+    "definition": "Movies, events, concerts, hobbies, games (non-subscription, one-off spend).",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Other",
+    "definition": "Does not clearly fit any other expense class but is still confidently an expense.",
+    "flow": "expense",
+    "direction": "debit",
+    "top_level_bucket": "Monthly Living Expenses",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Transfers / Excluded",
+    "definition": "Movement between the user's own accounts, full credit-card payments, savings/brokerage/retirement/HSA contributions, CD deposits -- excluded from the Expense Plan to avoid double counting.",
+    "flow": "transfer",
+    "direction": "debit",
+    "top_level_bucket": "Excluded / Transfers",
+    "needs_review_default": false,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  },
+  {
+    "name": "Needs Review",
+    "definition": "Could plausibly belong to more than one category (Amazon, Walmart, Costco, P2P apps, large one-time purchases, unknown merchants) -- routed to the user before it is counted anywhere.",
+    "flow": "ambiguous",
+    "direction": "debit",
+    "top_level_bucket": "Needs Review",
+    "needs_review_default": true,
+    "counts_actual_income": null,
+    "counts_projected_gross": null,
+    "requires_gross_confirmation": null
+  }
+]

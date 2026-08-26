@@ -245,11 +245,27 @@ def taxonomy_for_direction(direction: Direction) -> list[TxnClass]:
     return EXPENSE_TAXONOMY if direction == "debit" else INCOME_TAXONOMY
 
 
-def taxonomy_to_prompt_block(taxonomy: list[TxnClass]) -> str:
-    """Render a taxonomy as the AVAILABLE_CLASSES block injected into the
-    user message sent alongside the system prompt."""
-    lines = [f'- "{c.name}": {c.definition}' for c in taxonomy]
+def taxonomy_to_prompt_block(
+    taxonomy: list[TxnClass],
+    *,
+    max_definition_chars: int = 120,
+) -> str:
+    """Render a compact AVAILABLE_CLASSES block for the user message.
+
+    Definitions are truncated to keep the prompt small -- LLM token budgets
+    (e.g. Groq free tier's 8k TPM) make full-length definitions expensive,
+    and the system prompt already carries the detailed classification rules.
+    """
+    lines = []
+    for c in taxonomy:
+        # Prefer an explicit short description when the class provides one.
+        text = getattr(c, "short_description", None) or c.definition or ""
+        text = " ".join(text.split())  # collapse whitespace/newlines
+        if len(text) > max_definition_chars:
+            text = text[: max_definition_chars - 1].rstrip() + "…"
+        lines.append(f'- "{c.name}": {text}')
     return "AVAILABLE_CLASSES:\n" + "\n".join(lines)
+
 
 
 def resolve_flow_type(class_name: str, direction: Direction, taxonomy: list[TxnClass] | None = None) -> str:
