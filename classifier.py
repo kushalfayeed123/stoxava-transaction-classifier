@@ -438,14 +438,14 @@ def _parse_llm_confidence(p: dict) -> Optional[float]:
         (which would burn chunk retries)."""
         raw = p.get("confidence")
         try:
-            conf = float(raw)
+            conf = float(raw) # pyright: ignore[reportArgumentType]
         except (TypeError, ValueError):
             return None
         return min(max(conf, 0.0), 1.0)
 
 class LLMClassifier(Classifier):
 
-    def __init__(self, batch_size: int=5,
+    def __init__(self, batch_size: int=10,
                     provider_config: Optional["ProviderConfig"]=None):
             try:
                 from openai import OpenAI
@@ -655,6 +655,8 @@ class LLMClassifier(Classifier):
         kwargs: dict = {}
         if self._provider != "ollama":
             kwargs["response_format"] = {"type": "json_object"}
+        if self._provider == "openrouter":
+            kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 
         response = self._client.chat.completions.create(
             model=self._model,
@@ -663,7 +665,7 @@ class LLMClassifier(Classifier):
                 {"role": "user", "content": user_content},
             ],
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=4000,
             **kwargs,
         )
         log_event(logger, "llm_prompt_size", level=logging.DEBUG,
