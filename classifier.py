@@ -48,7 +48,6 @@ from typing import Any, Optional
 
 from openai import APIStatusError, RateLimitError
 
-
 from llm_provider import ProviderConfig
 from logging_utils import ensure_request_id, log_event
 from normalizer import NormalizedTransaction
@@ -143,7 +142,7 @@ _PFC_PRIMARY_MAP: dict[str, str] = {
 def _match_plaid_category(
     t: NormalizedTransaction,
     valid_names: set[str],
-    signal: Optional[RecurrenceSignal] = None,
+    signal: Optional[RecurrenceSignal]=None,
 ) -> Optional[tuple[str, float, str]]:
     """Returns (predicted_class, confidence, reason_code) from Plaid's own
     category fields, or None if nothing usable is present.
@@ -243,7 +242,7 @@ class Classifier:
 def _heuristic_guess(
     t: NormalizedTransaction,
     valid_names: set[str],
-    signal: Optional[RecurrenceSignal] = None,
+    signal: Optional[RecurrenceSignal]=None,
 ) -> tuple[str, float, str]:
     text = f"{t.merchant_name or ''} {t.description}".lower()
 
@@ -293,7 +292,7 @@ def _enrich(
     direction: Direction,
     is_guess: bool,
     taxonomy: list[TxnClass],
-    flow: str = "unknown",
+    flow: str="unknown",
 ) -> Prediction:
     transaction_type = resolve_flow_type(predicted_class, direction, taxonomy)
     return Prediction(
@@ -316,7 +315,7 @@ def _classify_via_plaid_or_heuristic(
     taxonomy: list[TxnClass],
     flow_if_plaid: str,
     flow_if_heuristic: str,
-    log_level: int = logging.DEBUG,
+    log_level: int=logging.DEBUG,
 ) -> Prediction:
     """Shared "try Plaid category, else heuristic guess" path used by every
     fallback site (chunk error, LLM missing a transaction, LLM returning an
@@ -327,9 +326,11 @@ def _classify_via_plaid_or_heuristic(
     if plaid_match is not None:
         cls, conf, reason = plaid_match
         flow = flow_if_plaid
+        is_guess = False   # real categorization data, not a guess
     else:
         cls, conf, reason = _heuristic_guess(t, valid_names, signal)
         flow = flow_if_heuristic
+        is_guess = True
 
     log_event(
         logger, "transaction_classified", level=log_level,
@@ -338,7 +339,7 @@ def _classify_via_plaid_or_heuristic(
     )
     return _enrich(
         t.transaction_id, cls, conf, None, reason,
-        direction=t.direction, is_guess=True, taxonomy=taxonomy, flow=flow,
+        direction=t.direction, is_guess=is_guess, taxonomy=taxonomy, flow=flow,
     )
 
 # --------------------------------------------------------------------------
@@ -382,10 +383,12 @@ class MockClassifier(Classifier):
 # --------------------------------------------------------------------------
 # Retry settings for transient failures (SSL resets, rate limits, timeouts).
 
-MAX_CHUNK_ATTEMPTS = 3          # total tries per chunk, incl. the first
-RETRY_BACKOFF_SECONDS = 2.0     # exponential: 2s, 4s
+
+MAX_CHUNK_ATTEMPTS = 3  # total tries per chunk, incl. the first
+RETRY_BACKOFF_SECONDS = 2.0  # exponential: 2s, 4s
 
 _RETRY_HINT_RE = re.compile(r"[Pp]lease try again in ([\d.]+)s")
+
 
 def _retry_delay(attempt: int, exc: Exception) -> float:
     """Delay honoring the server's own hint when available."""
@@ -410,59 +413,85 @@ def _retry_delay(attempt: int, exc: Exception) -> float:
 
     return RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
 
-     
+_VALID_LLM_REASON_CODES: frozenset[str] = frozenset({
+            "LLM_MERCHANT_KNOWLEDGE",
+            "LLM_CONTEXTUAL_INFERENCE",
+            "LLM_RECURRING_PATTERN",
+            "LLM_AMBIGUOUS",
+            "LLM_INSUFFICIENT_DATA",
+        })
 
 
+def _normalize_reason_code(raw: Any) -> str:
+    """Map any LLM-returned reason code onto the valid LLM_* vocabulary."""
+    code = str(raw or "").strip()
+    if code in _VALID_LLM_REASON_CODES:
+        return code
+    if code:
+        log_event(logger, "llm_reason_code_normalized", level=logging.DEBUG,
+                raw_code=code[:60])
+    return "LLM_AMBIGUOUS"
 
+def _parse_llm_confidence(p: dict) -> Optional[float]:
+        """Safely extract and clamp confidence. Returns None if missing or
+        unconvertible -- callers fall back per-transaction rather than raising
+        (which would burn chunk retries)."""
+        raw = p.get("confidence")
+        try:
+            conf = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return min(max(conf, 0.0), 1.0)
 
 class LLMClassifier(Classifier):
 
-    def __init__(self, batch_size: int = 5,
-                 provider_config: Optional["ProviderConfig"] = None):
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise ImportError(
-                "The 'openai' package is required for LLMClassifier. "
-                "Install with: uv add openai"
-            ) from exc
-        from llm_provider import ProviderConfig  # local import avoids cycle at module load
+    def __init__(self, batch_size: int=5,
+                    provider_config: Optional["ProviderConfig"]=None):
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise ImportError(
+                    "The 'openai' package is required for LLMClassifier. "
+                    "Install with: uv add openai"
+                ) from exc
+            from llm_provider import ProviderConfig  # local import avoids cycle at module load
 
-        cfg = provider_config or ProviderConfig()
+            cfg = provider_config or ProviderConfig()
 
-        if not SYSTEM_PROMPT_PATH.exists():
-            raise FileNotFoundError(
-                f"system_prompt.md not found at {SYSTEM_PROMPT_PATH}. "
-                "LLMClassifier requires this file alongside classifier.py."
+            if not SYSTEM_PROMPT_PATH.exists():
+                raise FileNotFoundError(
+                    f"system_prompt.md not found at {SYSTEM_PROMPT_PATH}. "
+                    "LLMClassifier requires this file alongside classifier.py."
+                )
+
+            extra_kwargs: dict = {}
+           
+            if cfg.provider == "openrouter":
+                extra_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://stoxava.local",
+                    "X-Title": "Stoxava Transaction Classifier",
+                }
+
+            self._client = OpenAI(
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                timeout=60.0,
+                max_retries=0,  # we own retries at the chunk level; avoid double-retrying
+                ** extra_kwargs,
             )
+            self._provider = cfg.provider
+            self._model = cfg.model
+            self._batch_size = batch_size
+            self._system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+            self._recent_sends: collections.deque[float] = collections.deque()
+        
+  
 
-        extra_kwargs: dict = {}
-        if cfg.provider == "groq":
-            # Groq's JSON mode is strict; keep it simple.
-            pass
-        if cfg.provider == "openrouter":
-            extra_kwargs["default_headers"] = {
-                "HTTP-Referer": "https://stoxava.local",
-                "X-Title": "Stoxava Transaction Classifier",
-            }
-
-        self._client = OpenAI(
-            api_key=cfg.api_key,
-            base_url=cfg.base_url,
-            timeout=60.0,
-            max_retries=0,  # we own retries at the chunk level; avoid double-retrying
-            **extra_kwargs,
-        )
-        self._provider = cfg.provider
-        self._model = cfg.model
-        self._batch_size = batch_size
-        self._system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-        self._recent_sends: collections.deque[float] = collections.deque()
 
     def _pace(self):
         """Sleep until sending another ~4k-token request stays under TPM."""
         TPM_BUDGET = 8000
-        TOKENS_PER_REQUEST = 4200          # slightly overestimate for safety
+        TOKENS_PER_REQUEST = 4200  # slightly overestimate for safety
         now = time.monotonic()
         while self._recent_sends and now - self._recent_sends[0] > 60:
             self._recent_sends.popleft()
@@ -475,7 +504,6 @@ class LLMClassifier(Classifier):
                             sleeping_seconds=round(sleep_for, 1))
                 time.sleep(max(sleep_for, 0))
         self._recent_sends.append(time.monotonic())
-
 
     def classify_batch(self, transactions, taxonomy):
         ensure_request_id()
@@ -512,7 +540,7 @@ class LLMClassifier(Classifier):
                                   error=str(exc)[:300])
                         results.extend(self._fallback_chunk(chunk, taxonomy, signals))
                         break
-                    sleep_s = _retry_delay(attempt, exc)   # e.g. 24s — actually waits
+                    sleep_s = _retry_delay(attempt, exc)  # e.g. 24s — actually waits
                     log_event(logger, "llm_chunk_retrying", level=logging.WARNING,
                               chunk_index=idx, attempt=attempt,
                               max_attempts=MAX_CHUNK_ATTEMPTS,
@@ -542,7 +570,6 @@ class LLMClassifier(Classifier):
             # a short gap keeps consecutive chunks from colliding in-window.
             time.sleep(2.0)
 
-
         log_event(logger, "classify_batch_complete", backend="LLMClassifier",
                   provider=self._provider,
                   total_transactions=len(transactions),
@@ -569,14 +596,31 @@ class LLMClassifier(Classifier):
             for t in chunk
         ]
 
+
+    @staticmethod
+    def _build_examples() -> list[dict]:
+        """Few-shot examples shown to the model. Placeholder IDs ONLY --
+        never use a real transaction_id from the current chunk here, or the
+        model may echo it and collide/drop its real predictions."""
+        return [
+            {
+                "transaction_id": "<first_transaction_id>",
+                "predicted_class": "<class name from taxonomy>",
+                "confidence": 0.93,
+                "alternative_class": None,
+                "reason_code": "LLM_MERCHANT_KNOWLEDGE",
+            },
+            {
+                "transaction_id": "<second_transaction_id>",
+                "predicted_class": "<best guess from taxonomy>",
+                "confidence": 0.55,
+                "alternative_class": "<second-best guess from taxonomy>",
+                "reason_code": "LLM_INSUFFICIENT_DATA",
+            },
+        ]
+
     def _classify_chunk(self, chunk, taxonomy, signals):
-        example = json.dumps([{
-            "transaction_id": chunk[0].transaction_id,
-            "predicted_class": "<class name from taxonomy>",
-            "confidence": 0.9,
-            "alternative_class": None,
-            "reason_code": "MERCHANT_MATCH",
-        }], indent=2)
+      
 
         annotated = []
         for t in chunk:
@@ -599,11 +643,11 @@ class LLMClassifier(Classifier):
                 compact["recurrence_signal"] = sig.to_prompt_fragment()
             annotated.append(compact)
 
-
         user_content = (
             taxonomy_to_prompt_block(taxonomy)
-            + "\nRespond with ONLY a JSON array of objects matching this shape:\n"
-            + example
+            + "\nRespond with ONLY a compact JSON object (no indentation, "
+              "one prediction per line) of this exact shape:\n"
+            + json.dumps({"predictions": self._build_examples()})
             + "\nTRANSACTIONS:\n"
             + json.dumps(annotated, indent=2)
         )
@@ -629,6 +673,9 @@ class LLMClassifier(Classifier):
                   total_chars=len(user_content))
         return self._parse_response(response, chunk, taxonomy, signals)
 
+   
+
+    
     @staticmethod
     def _parse_response(
         response: Any,
@@ -699,7 +746,7 @@ class LLMClassifier(Classifier):
         # ---- Normalize shape --------------------------------------------
         # The model may wrap the array in a dict under various keys.
         if isinstance(raw_predictions, dict):
-            for key in ("transactions", "predictions", "results", "data"):
+            for key in ("predictions", "transactions", "results", "data"):
                 inner = raw_predictions.get(key)
                 if isinstance(inner, list):
                     raw_predictions = inner
@@ -748,8 +795,19 @@ class LLMClassifier(Classifier):
             # says this deposit doesn't match the counterparty's established
             # cadence. Only ever downgrades REGULAR_PAYCHECK, never anything
             # else.
-            confidence = float(p.get("confidence", 0.0))
-            reason_code = str(p.get("reason_code", "AMBIGUOUS"))
+            confidence = _parse_llm_confidence(p)
+            if confidence is None:
+                log_event(logger, "llm_invalid_confidence", level=logging.WARNING,
+                          transaction_id=t.transaction_id,
+                          raw_value=str(p.get("confidence"))[:40])
+                out.append(_classify_via_plaid_or_heuristic(
+                    t, valid_names, signal, taxonomy,
+                    flow_if_plaid="llm_invalid_confidence_plaid_fallback",      # ← typo fixed
+                    flow_if_heuristic="llm_invalid_confidence_heuristic_fallback",
+                    log_level=logging.INFO,
+                ))
+                continue
+            reason_code = _normalize_reason_code(p.get("reason_code"))
             is_guess = False
             flow = "llm"
 
@@ -785,6 +843,9 @@ class LLMClassifier(Classifier):
                 )
 
             alt = p.get("alternative_class")
+            alt = str(alt) if alt in valid_names else None
+            if alt is not None and alt == predicted_class:
+                alt = None  # echoing the same class makes "second-best" meaningless
             out.append(
                 _enrich(
                     t.transaction_id,
