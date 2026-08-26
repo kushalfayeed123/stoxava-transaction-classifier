@@ -55,6 +55,8 @@ from normalizer import NormalizedTransaction
 from recurrence import RecurrenceSignal, compute_recurrence_signals
 from taxonomy import TxnClass, taxonomy_to_prompt_block, resolve_flow_type, \
     Direction
+    
+import collections
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.md"
 
@@ -225,7 +227,7 @@ class Prediction:
 
 class Classifier:
     """Interface implemented by the LLM and Mock backends."""
-
+    
     def classify_batch(
         self,
         transactions: list[NormalizedTransaction],
@@ -408,6 +410,8 @@ def _retry_delay(attempt: int, exc: Exception) -> float:
 
     return RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
 
+     
+
 
 
 
@@ -453,6 +457,24 @@ class LLMClassifier(Classifier):
         self._model = cfg.model
         self._batch_size = batch_size
         self._system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+        self._recent_sends: collections.deque[float] = collections.deque()
+
+    def _pace(self):
+        """Sleep until sending another ~4k-token request stays under TPM."""
+        TPM_BUDGET = 8000
+        TOKENS_PER_REQUEST = 4200          # slightly overestimate for safety
+        now = time.monotonic()
+        while self._recent_sends and now - self._recent_sends[0] > 60:
+            self._recent_sends.popleft()
+        if self._recent_sends:
+            # tokens already spent in this window vs. what remains
+            used = len(self._recent_sends) * TOKENS_PER_REQUEST
+            if used + TOKENS_PER_REQUEST > TPM_BUDGET:
+                sleep_for = 60 - (now - self._recent_sends[0]) + 1.0
+                log_event(logger, "llm_pacing", level=logging.DEBUG,
+                            sleeping_seconds=round(sleep_for, 1))
+                time.sleep(max(sleep_for, 0))
+        self._recent_sends.append(time.monotonic())
 
 
     def classify_batch(self, transactions, taxonomy):
@@ -472,6 +494,7 @@ class LLMClassifier(Classifier):
             log_event(logger, "llm_chunk_start", chunk_index=idx,
                       chunk_size=len(chunk), of_chunks=num_chunks)
 
+            self._pace()
             attempt = 0
             while True:
                 try:
