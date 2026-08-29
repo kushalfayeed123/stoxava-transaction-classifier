@@ -4,12 +4,15 @@
 #   1. Push this repo to GitHub.
 #   2. On Render: New -> Blueprint -> pick the repo -> Apply.
 #      Render reads this file automatically and creates the service below.
-#   3. Set GEMINI_API_KEY in the service's Environment tab if you want the
-#      real LLM backend; otherwise it runs MockClassifier automatically.
+#   3. Set LLM_PROVIDER and LLM_API_KEY in the service's Environment tab.
+#      Recommended: LLM_PROVIDER=groq with LLM_API_KEY from console.groq.com
+#      (llama-3.1-8b-instant: ~50ms latency, 30k RPM free tier)
+#      Falls back to MockClassifier if no key is set.
 #
-# Free-tier notes: the instance sleeps after ~15 min idle and cold-starts
-# on the next request (a few seconds) -- fine for dev/test, not for a demo
-# you're presenting live without warming it up first.
+# Free-tier notes: 
+# - Instance sleeps after ~15 min idle (cold start ~10-30s)
+# - For demo, use "curl https://your-app.onrender.com/health" every 10min to keep warm
+# - Consider Fly.io (fly.toml) for always-on free tier with 3 shared-CPU VMs
 services:
   - type: web
     name: transaction-classifier
@@ -17,6 +20,14 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
+    # Resource limits for free tier (512MB RAM, 0.1 CPU)
+    # gunicorn with 2 workers fits in 512MB
     envVars:
-      - key: GEMINI_API_KEY
-        sync: false  # set manually in the dashboard; never commit real keys
+      - key: LLM_PROVIDER
+        value: "groq"  # fastest free tier for classification
+      - key: LLM_API_KEY
+        sync: false  # set manually in dashboard
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: PORT
+        value: "8000"

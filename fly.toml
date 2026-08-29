@@ -1,12 +1,15 @@
 # Fly.io alternative to Render. Free/hobby allowance covers small services
-# like this comfortably.
+# like this comfortably (3 shared-CPU VMs, 512MB RAM each, always-on).
 #
 #   1. Install flyctl, then from this directory: `fly launch --no-deploy`
 #      (it will detect the Dockerfile and pre-fill this file -- keep the
 #      values below or let it overwrite them).
-#   2. `fly secrets set GEMINI_API_KEY=...` (optional, for the LLM backend).
+#   2. `fly secrets set LLM_PROVIDER=groq LLM_API_KEY=gsk_...` 
+#      (get key from console.groq.com -- llama-3.1-8b-instant is free)
 #   3. `fly deploy`
 #
+# Free tier: 3 VMs, 512MB RAM each, 160GB monthly transfer, always-on
+# (no sleep like Render). Great for demos and low-traffic production.
 app = "transaction-classifier"
 primary_region = "iad"
 
@@ -17,10 +20,20 @@ primary_region = "iad"
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1  # Keep at least 1 running for always-on demo
+  max_machines_running = 2  # Scale to 2 under load (fits free tier)
 
 [[http_service.checks]]
   path = "/health"
   interval = "30s"
   timeout = "5s"
   method = "GET"
+
+# Resource limits per VM (fits Fly free tier: 512MB RAM, shared CPU)
+[vm]
+  memory = "512mb"
+  cpus = 1
+
+# Scale to zero after 1 hour idle (set to 0 to disable auto-stop)
+[http_service.auto_stop_machines]
+  # Actually handled by auto_stop_machines = true above

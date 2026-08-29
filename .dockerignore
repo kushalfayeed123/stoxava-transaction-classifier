@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Test data
+dummy_data.py
+demo.py
+
+# Documentation
+*.md
+!README.md
+
+# Config files (local)
+.env
+.env.local
+.env.*.local
+
+# Cache
+.cache/
+.pip_cache/
+uv.lock

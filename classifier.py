@@ -379,13 +379,14 @@ class MockClassifier(Classifier):
         return out
 
 # --------------------------------------------------------------------------
-# LLM-backed classifier (production path using Gemini Free Tier)
+# LLM-backed classifier (production path using fast, cheap models)
 # --------------------------------------------------------------------------
 # Retry settings for transient failures (SSL resets, rate limits, timeouts).
+# These can be overridden via environment variables for deployment tuning.
 
-
-MAX_CHUNK_ATTEMPTS = 3  # total tries per chunk, incl. the first
-RETRY_BACKOFF_SECONDS = 2.0  # exponential: 2s, 4s
+MAX_CHUNK_ATTEMPTS = int(os.environ.get("MAX_CHUNK_ATTEMPTS", "3"))
+RETRY_BACKOFF_SECONDS = float(os.environ.get("RETRY_BACKOFF_SECONDS", "1.5"))
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
 
 _RETRY_HINT_RE = re.compile(r"[Pp]lease try again in ([\d.]+)s")
 
@@ -411,7 +412,10 @@ def _retry_delay(attempt: int, exc: Exception) -> float:
     if m:
         return float(m.group(1)) + 1.0
 
-    return RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    # Exponential backoff with jitter (fallback)
+    import random
+    base = RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    return base + random.uniform(0, 0.5)
 
 _VALID_LLM_REASON_CODES: frozenset[str] = frozenset({
             "LLM_MERCHANT_KNOWLEDGE",
@@ -475,7 +479,7 @@ class LLMClassifier(Classifier):
             self._client = OpenAI(
                 api_key=cfg.api_key,
                 base_url=cfg.base_url,
-                timeout=60.0,
+                timeout=REQUEST_TIMEOUT_SECONDS,
                 max_retries=0,  # we own retries at the chunk level; avoid double-retrying
                 ** extra_kwargs,
             )
@@ -484,15 +488,20 @@ class LLMClassifier(Classifier):
             self._batch_size = batch_size
             self._system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
             self._recent_sends: collections.deque[float] = collections.deque()
+            # Adaptive batch sizing based on provider limits
+            self._tpm_budget = self._get_tpm_budget(cfg.provider)
+            self._tokens_per_request_estimate = 3000  # conservative estimate
         
   
 
 
     def _pace(self):
-        """Sleep until sending another ~4k-token request stays under TPM."""
-        TPM_BUDGET = 8000
-        TOKENS_PER_REQUEST = 4200  # slightly overestimate for safety
+        """Sleep until sending another request stays under TPM budget."""
+        from collections import deque
+        TPM_BUDGET = self._tpm_budget
+        TOKENS_PER_REQUEST = self._tokens_per_request_estimate
         now = time.monotonic()
+        # Remove old entries (>60 seconds)
         while self._recent_sends and now - self._recent_sends[0] > 60:
             self._recent_sends.popleft()
         if self._recent_sends:
@@ -516,9 +525,12 @@ class LLMClassifier(Classifier):
                   total_transactions=len(transactions),
                   batch_size=self._batch_size, chunk_count=num_chunks)
 
+        # Adaptive batch size based on transaction count and provider limits
+        adaptive_batch_size = self._calculate_adaptive_batch_size(len(transactions))
+        
         results: list[Prediction] = []
-        for idx, start in enumerate(range(0, len(transactions), self._batch_size)):
-            chunk = transactions[start: start + self._batch_size]
+        for idx, start in enumerate(range(0, len(transactions), adaptive_batch_size)):
+            chunk = transactions[start: start + adaptive_batch_size]
             log_event(logger, "llm_chunk_start", chunk_index=idx,
                       chunk_size=len(chunk), of_chunks=num_chunks)
 
@@ -540,7 +552,7 @@ class LLMClassifier(Classifier):
                                   error=str(exc)[:300])
                         results.extend(self._fallback_chunk(chunk, taxonomy, signals))
                         break
-                    sleep_s = _retry_delay(attempt, exc)  # e.g. 24s — actually waits
+                    sleep_s = _retry_delay(attempt, exc)
                     log_event(logger, "llm_chunk_retrying", level=logging.WARNING,
                               chunk_index=idx, attempt=attempt,
                               max_attempts=MAX_CHUNK_ATTEMPTS,
@@ -566,9 +578,9 @@ class LLMClassifier(Classifier):
                     sleep_s = _retry_delay(attempt, exc)
                     time.sleep(sleep_s)
 
-            # Pace between chunks: with ~4k-token requests on an 8k TPM budget,
-            # a short gap keeps consecutive chunks from colliding in-window.
-            time.sleep(2.0)
+            # Minimal pace between chunks - _pace() handles rate limiting
+            if idx < num_chunks - 1:
+                time.sleep(0.5)
 
         log_event(logger, "classify_batch_complete", backend="LLMClassifier",
                   provider=self._provider,
@@ -597,31 +609,46 @@ class LLMClassifier(Classifier):
         ]
 
 
-    @staticmethod
-    def _build_examples() -> list[dict]:
-        """Few-shot examples shown to the model. Placeholder IDs ONLY --
-        never use a real transaction_id from the current chunk here, or the
-        model may echo it and collide/drop its real predictions."""
+    def _build_examples(self, taxonomy: list[TxnClass]) -> list[dict]:
+        """Few-shot examples shown to the model. Uses realistic examples
+        to guide the model without using real transaction IDs."""
+        # Select 2 diverse examples from taxonomy to guide the model
+        expense_classes = [c.name for c in taxonomy if c.flow == "expense"][:3]
+        income_classes = [c.name for c in taxonomy if c.flow == "income"][:3]
+        
         return [
             {
-                "transaction_id": "<first_transaction_id>",
-                "predicted_class": "<class name from taxonomy>",
-                "confidence": 0.93,
-                "alternative_class": None,
+                "transaction_id": "example_001",
+                "predicted_class": expense_classes[0] if expense_classes else "Groceries",
+                "confidence": 0.94,
+                "alternative_class": expense_classes[1] if len(expense_classes) > 1 else "Shopping",
                 "reason_code": "LLM_MERCHANT_KNOWLEDGE",
             },
             {
-                "transaction_id": "<second_transaction_id>",
-                "predicted_class": "<best guess from taxonomy>",
-                "confidence": 0.55,
-                "alternative_class": "<second-best guess from taxonomy>",
-                "reason_code": "LLM_INSUFFICIENT_DATA",
+                "transaction_id": "example_002",
+                "predicted_class": income_classes[0] if income_classes else "REGULAR_PAYCHECK",
+                "confidence": 0.60,
+                "alternative_class": income_classes[1] if len(income_classes) > 1 else "OTHER_W2",
+                "reason_code": "LLM_CONTEXTUAL_INFERENCE",
             },
         ]
 
-    def _classify_chunk(self, chunk, taxonomy, signals):
-      
+    def _calculate_adaptive_batch_size(self, total_transactions: int) -> int:
+        """Calculate optimal batch size based on provider limits and transaction count."""
+        # Base batch size from constructor
+        base = self._batch_size
+        
+        # For small workloads, use smaller batches to reduce latency
+        if total_transactions <= 10:
+            return min(base, 5)
+        elif total_transactions <= 50:
+            return min(base, 15)
+        elif total_transactions <= 200:
+            return min(base, 25)
+        else:
+            return base  # Use configured batch size for large batches
 
+    def _classify_chunk(self, chunk, taxonomy, signals):
         annotated = []
         for t in chunk:
             d = t.to_dict()
@@ -643,13 +670,14 @@ class LLMClassifier(Classifier):
                 compact["recurrence_signal"] = sig.to_prompt_fragment()
             annotated.append(compact)
 
+        # Compact JSON output - no indentation to save tokens
         user_content = (
             taxonomy_to_prompt_block(taxonomy)
             + "\nRespond with ONLY a compact JSON object (no indentation, "
               "one prediction per line) of this exact shape:\n"
-            + json.dumps({"predictions": self._build_examples()})
+            + json.dumps({"predictions": self._build_examples(taxonomy)}, separators=(',', ':'))
             + "\nTRANSACTIONS:\n"
-            + json.dumps(annotated, indent=2)
+            + json.dumps(annotated, separators=(',', ':'))
         )
 
         kwargs: dict = {}
@@ -658,6 +686,9 @@ class LLMClassifier(Classifier):
         if self._provider == "openrouter":
             kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 
+        # Calculate dynamic max_tokens based on chunk size (estimate ~150 tokens per prediction)
+        max_tokens = min(2000, max(500, len(chunk) * 180))
+        
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -665,7 +696,7 @@ class LLMClassifier(Classifier):
                 {"role": "user", "content": user_content},
             ],
             temperature=0.0,
-            max_tokens=4000,
+            max_tokens=max_tokens,
             **kwargs,
         )
         log_event(logger, "llm_prompt_size", level=logging.DEBUG,
@@ -862,3 +893,18 @@ class LLMClassifier(Classifier):
                 )
             )
         return out
+
+    def _get_tpm_budget(self, provider: str) -> int:
+        """Get tokens-per-minute budget for the provider.
+        
+        Returns conservative estimates for free tiers to avoid rate limits.
+        """
+        # Conservative TPM limits for free tiers
+        tpm_limits = {
+            "groq": 6000,       # Groq free tier: 6K TPM
+            "openrouter": 10000, # OpenRouter varies by model, use conservative
+            "gemini": 15000,     # Gemini 1.5 Flash: 15K TPM free
+            "nvidia": 30000,     # NVIDIA NIM: generous limits
+            "ollama": 1000000,   # Local Ollama: effectively unlimited
+        }
+        return tpm_limits.get(provider, 5000)  # Default conservative

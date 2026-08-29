@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
+import sys
+import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from classifier import LLMClassifier, Classifier, MockClassifier
@@ -32,6 +36,8 @@ logging.basicConfig(
 
 logger = logging.getLogger("transaction_classifier")
 access_logger = logging.getLogger("transaction_classifier.access")
+
+START_TIME = time.perf_counter()
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -57,20 +63,36 @@ app = FastAPI(
 
 
 # --------------------------------------------------------------------------
-# Request logging middleware
+# Request logging + timeout middleware
 # --------------------------------------------------------------------------
 # Logs method, path, client IP, and User-Agent for every request, plus
-# status + latency once the response is ready. This is what tells you
-# *who* is hitting /health repeatedly: a platform health checker, an
-# uptime pinger, multiple worker processes, or a scanner will each show
-# a distinct UA/IP/cadence pattern in these lines.
+# status + latency once the response is ready. Also enforces a global
+# request timeout to prevent hung requests from consuming workers.
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "120"))
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.perf_counter()
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "-")
 
-    response = await call_next(request)
+    import asyncio
+    try:
+        # Wrap call_next with timeout
+        response = await asyncio.wait_for(
+            call_next(request),
+            timeout=REQUEST_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        duration_ms = (time.perf_counter() - start) * 1000
+        access_logger.warning(
+            "%s %s -> TIMEOUT (%.1fms) ip=%s ua=%s",
+            request.method, request.url.path, duration_ms, client_ip, user_agent
+        )
+        return JSONResponse(
+            status_code=504,
+            content={"detail": f"Request timeout after {REQUEST_TIMEOUT_SECONDS}s"}
+        )
 
     duration_ms = (time.perf_counter() - start) * 1000
     # Health checks are extremely high-volume and low-signal once you've
@@ -91,7 +113,9 @@ async def log_requests(request: Request, call_next):
 
 def get_classifier():
     try:
-        return LLMClassifier(provider_config=ProviderConfig())
+        config = ProviderConfig()
+        config.verify_model_available()
+        return LLMClassifier(provider_config=config)
     except (ImportError, RuntimeError, ValueError) as exc:
         logging.getLogger(__name__).warning(
             "Falling back to MockClassifier: %s", exc
@@ -100,6 +124,34 @@ def get_classifier():
 
 
 classifier: Classifier = get_classifier()
+
+
+# --------------------------------------------------------------------------
+# Simple in-memory rate limiter (per IP, sliding window)
+# --------------------------------------------------------------------------
+# For free tier VPS, limit classification requests to prevent abuse
+# and stay within LLM provider rate limits.
+_rate_limit_lock = threading.Lock()
+_request_timestamps: dict[str, list[float]] = defaultdict(list)
+
+RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "30"))  # per window
+RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))  # 1 minute
+
+def check_rate_limit(client_ip: str) -> tuple[bool, int]:
+    """Check if client IP is within rate limits.
+    Returns (allowed, remaining_requests)."""
+    now = time.perf_counter()
+    with _rate_limit_lock:
+        # Clean old timestamps
+        cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+        _request_timestamps[client_ip] = [ts for ts in _request_timestamps[client_ip] if ts > cutoff]
+        
+        current_count = len(_request_timestamps[client_ip])
+        if current_count >= RATE_LIMIT_REQUESTS:
+            return False, 0
+        
+        _request_timestamps[client_ip].append(now)
+        return True, RATE_LIMIT_REQUESTS - current_count - 1
 
 
 # --------------------------------------------------------------------------
@@ -148,11 +200,8 @@ _EXAMPLE_PLAID_SYNC_PAYLOAD = {
             "category": ["Food and Drink", "Restaurants"],
             "personal_finance_category": {"detailed": "FOOD_AND_DRINK_RESTAURANT", "primary": "FOOD_AND_DRINK"},
             "transaction_id": "r3neyJRBGVTvMrWMmlQ3F6nzxZLpQ9CqbXomG",
-        },
-    ],
-    "modified": [],
-    "removed": [],
-    "has_more": True,
+        }
+    ]
 }
 
 
@@ -207,8 +256,14 @@ class ClassificationResponse(BaseModel):
 
 
 @app.get("/health", tags=["ops"], summary="Liveness/readiness probe")
-def health() -> dict[str, str]:
-    return {"status": "ok", "backend": type(classifier).__name__}
+def health() -> dict[str, Any]:
+    import sys
+    return {
+        "status": "ok",
+        "backend": type(classifier).__name__,
+        "python_version": sys.version.split()[0],
+        "uptime_seconds": time.perf_counter() - START_TIME,
+    }
 
 
 @app.post(
@@ -218,7 +273,19 @@ def health() -> dict[str, str]:
     summary="Classify a batch of Plaid transactions",
     response_description="Original transactions enriched with a `classification` object, plus a batch summary.",
 )
-def classify_transactions(payload: ClassificationRequest) -> dict[str, Any]:
+def classify_transactions(payload: ClassificationRequest, request: Request) -> dict[str, Any]:
+    # Rate limiting by client IP
+    client_ip = request.client.host if request.client else "unknown"
+    allowed, remaining = check_rate_limit(client_ip)
+    if not allowed:
+        access_logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {RATE_LIMIT_WINDOW_SECONDS}s.",
+            headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)}
+        )
+    access_logger.debug(f"Rate limit remaining for {client_ip}: {remaining}")
+
     raw_data = payload.transactions
 
     if not raw_data:
@@ -249,3 +316,19 @@ _INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return _INDEX_HTML
+
+
+# --------------------------------------------------------------------------
+# Graceful shutdown
+# --------------------------------------------------------------------------
+
+_shutdown_event = threading.Event()
+
+def _shutdown_handler(signum, frame):
+    logger.info("Shutdown signal received, stopping gracefully...")
+    _shutdown_event.set()
+    # Give in-flight requests time to complete (max 30s)
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _shutdown_handler)
+signal.signal(signal.SIGINT, _shutdown_handler)
