@@ -44,4 +44,3 @@ demo.py
 # Cache
 .cache/
 .pip_cache/
-uv.lock
