@@ -33,7 +33,6 @@ dummy_data.py
 demo.py
 
 # Documentation
-*.md
 !README.md
 
 # Config files (local)
